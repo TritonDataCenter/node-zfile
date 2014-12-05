@@ -1,0 +1,23 @@
+{
+  "name": "zsock",
+  "description": "Library for safely opening a stream to a file located within a zone.",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/joyent/node-zfile.git"
+  },
+  "author": "Joyent (joyent.com)",
+  "main": "lib/zfile.js",
+  "scripts": {
+    "preinstall": "node-waf configure build",
+    "test": "TEST_ZONE=`zoneadm list | grep -v global | head -1` ./node_modules/.bin/nodeunit tst/*.test.js"
+  },
+  "devDependencies": {
+    "nodeunit": "0.7.4",
+    "node-uuid": "1.4.0"
+  },
+  "engines": {
+    "node": ">=0.8"
+  },
+  "license": "MPL-2.0"
+}
