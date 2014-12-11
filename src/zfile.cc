@@ -1,3 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+/*
+ * Copyright (c) 2014, Joyent, Inc.
+ */
+
 #include <alloca.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -23,8 +33,8 @@
 #include <v8.h>
 
 static const int BUF_SZ = 27;
-// static const char *PREFIX = "%s GMT T(%d) %s: ";
-// static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+static const char *PREFIX = "%s GMT T(%d) %s: ";
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Node Macros require these
 using v8::Persistent;
@@ -107,27 +117,201 @@ class eio_baton_t {
 };
 
 
+static void chomp(char *s) {
+    while (*s && *s != '\n' && *s != '\r')
+        s++;
+    *s = 0;
+}
+
+
 static void debug(const char *fmt, ...) {
-  char *buf = NULL;
-  struct tm tm = {};
-  time_t now;
-  va_list alist;
+    char *buf = NULL;
+    struct tm tm = {};
+    time_t now;
+    va_list alist;
 
-  if (getenv("ZFILE_DEBUG") == NULL) return;
+    if (getenv("ZFILE_DEBUG") == NULL) return;
 
-  if ((buf = (char *)alloca(BUF_SZ)) == NULL)
-    return;
+    if ((buf = (char *)alloca(BUF_SZ)) == NULL)
+        return;
 
-  now = time(0);
-  gmtime_r(&now, &tm);
-  asctime_r(&tm, buf);
-  chomp(buf);
+    now = time(0);
+    gmtime_r(&now, &tm);
+    asctime_r(&tm, buf);
+    chomp(buf);
 
-  va_start(alist, fmt);
+    va_start(alist, fmt);
 
-  fprintf(stderr, PREFIX, buf, pthread_self(), "DEBUG");
-  vfprintf(stderr, fmt, alist);
-  va_end(alist);
+    fprintf(stderr, PREFIX, buf, pthread_self(), "DEBUG");
+    vfprintf(stderr, fmt, alist);
+    va_end(alist);
+}
+
+
+static int init_template(void) {
+    int fd = 0;
+    int err = 0;
+
+    fd = open64(CTFS_ROOT "/process/template", O_RDWR);
+    if (fd == -1)
+        return (-1);
+
+    err |= ct_tmpl_set_critical(fd, 0);
+    err |= ct_tmpl_set_informative(fd, 0);
+    err |= ct_pr_tmpl_set_fatal(fd, CT_PR_EV_HWERR);
+    err |= ct_pr_tmpl_set_param(fd, CT_PR_PGRPONLY | CT_PR_REGENT);
+    if (err || ct_tmpl_activate(fd)) {
+        (void) close(fd);
+        return (-1);
+    }
+
+    return (fd);
+}
+
+
+static int contract_latest(ctid_t *id) {
+  int cfd = 0;
+  int r = 0;
+  ct_stathdl_t st = {0};
+  ctid_t result = {0};
+
+  if ((cfd = open64(CTFS_ROOT "/process/latest", O_RDONLY)) == -1)
+    return (errno);
+  if ((r = ct_status_read(cfd, CTD_COMMON, &st)) != 0) {
+    (void) close(cfd);
+    return (r);
+  }
+
+  result = ct_status_get_id(st);
+  ct_status_free(st);
+  (void) close(cfd);
+
+  *id = result;
+  return (0);
+}
+
+
+static int close_on_exec(int fd) {
+  int flags = fcntl(fd, F_GETFD, 0);
+  if ((flags != -1) && (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != -1))
+    return (0);
+  return (-1);
+}
+
+
+static int contract_open(ctid_t ctid,
+                         const char *type,
+                         const char *file,
+                         int oflag) {
+  char path[PATH_MAX];
+  unsigned int n = 0;
+  int fd = 0;
+
+  if (type == NULL)
+    type = "all";
+
+  n = snprintf(path, PATH_MAX, CTFS_ROOT "/%s/%ld/%s", type, ctid, file);
+  if (n >= sizeof(path)) {
+    errno = ENAMETOOLONG;
+    return (-1);
+  }
+
+  fd = open64(path, oflag);
+  if (fd != -1) {
+    if (close_on_exec(fd) == -1) {
+      int err = errno;
+      (void) close(fd);
+      errno = err;
+      return (-1);
+    }
+  }
+  return (fd);
+}
+
+
+static int contract_abandon_id(ctid_t ctid) {
+  int fd = 0;
+  int err = 0;
+
+  fd = contract_open(ctid, "all", "ctl", O_WRONLY);
+  if (fd == -1)
+    return (errno);
+
+  err = ct_ctl_abandon(fd);
+  (void) close(fd);
+
+  return (err);
+}
+
+
+static ssize_t read_fd(int fd, void *ptr, size_t nbytes, int *recvfd) {
+  struct msghdr msg;
+  struct iovec iov[1];
+  ssize_t n = -1;
+  union {
+    struct cmsghdr cm;
+    char control[CMSG_SPACE(sizeof(int))];
+  } control_un;
+  struct cmsghdr *cmptr = NULL;
+
+  msg.msg_control = control_un.control;
+  msg.msg_controllen = sizeof(control_un.control);
+  msg.msg_name = NULL;
+  msg.msg_namelen = 0;
+
+  iov[0].iov_base = ptr;
+  iov[0].iov_len = nbytes;
+  msg.msg_iov = iov;
+  msg.msg_iovlen = 1;
+
+  if ((n = recvmsg(fd, &msg, 0)) <= 0) {
+    return (n);
+  }
+
+  if ((cmptr = CMSG_FIRSTHDR(&msg)) != NULL &&
+      cmptr->cmsg_len == CMSG_LEN(sizeof(int))) {
+    if (cmptr->cmsg_level != SOL_SOCKET ||
+        cmptr->cmsg_type != SCM_RIGHTS) {
+      *recvfd = -1;
+      errno = EINVAL;
+      return (-1);
+    }
+
+    *recvfd = *(reinterpret_cast<int *>(CMSG_DATA(cmptr)));
+  } else {
+    *recvfd = -1;
+  }
+
+  return (n);
+}
+
+
+static ssize_t write_fd(int fd, void *ptr, size_t nbytes, int sendfd) {
+  struct msghdr msg;
+  struct iovec iov[1];
+  union {
+    struct cmsghdr cm;
+    char control[CMSG_SPACE(sizeof(int))];
+  } control_un;
+  struct cmsghdr *cmptr = NULL;
+
+  msg.msg_control = control_un.control;
+  msg.msg_controllen = sizeof(control_un.control);
+
+  cmptr = CMSG_FIRSTHDR(&msg);
+  cmptr->cmsg_len = CMSG_LEN(sizeof(int));
+  cmptr->cmsg_level = SOL_SOCKET;
+  cmptr->cmsg_type = SCM_RIGHTS;
+  *(reinterpret_cast<int *>(CMSG_DATA(cmptr))) = sendfd;
+
+  msg.msg_name = NULL;
+  msg.msg_namelen = 0;
+  iov[0].iov_base = ptr;
+  iov[0].iov_len = nbytes;
+  msg.msg_iov = iov;
+  msg.msg_iovlen = 1;
+
+  return (sendmsg(fd, &msg, 0));
 }
 
 
@@ -136,13 +320,14 @@ static int zfile(zoneid_t zoneid, const char *path) {
   ctid_t ct = -1;
   int _errno = 0;
   int pid = 0;
-  int sock_fd = 0;
+
+  /* The FD for the file we will open */
+  int file_fd = 0;
+
   int sockfd[2] = {0};
   int stat = 0;
   int tmpl_fd = 0;
   int flags;
-  struct sockaddr_un addr = {0};
-  size_t addr_len = 0;
 
   if (zoneid < 0) {
     return (-1);
@@ -177,35 +362,76 @@ static int zfile(zoneid_t zoneid, const char *path) {
     return (-1);
   }
 
+  if (pid == 0) {
+    (void) ct_tmpl_clear(tmpl_fd);
+    (void) close(tmpl_fd);
+    (void) close(sockfd[0]);
+    int ret;
 
-// static void EIO_ZSocket(uv_work_t *req) {
-//     eio_baton_t *baton = static_cast<eio_baton_t *>(req->data);
-// 
-//     zoneid_t zoneid = getzoneidbyname(baton->_zone);
-//     if (zoneid < 0) {
-//         baton->setErrno("getzoneidbyname", errno);
-//         return;
-//     }
-//     int sock_fd = -1;
-//     int attempts = 1;
-//     do {
-//         // This call suffers from EINTR, so just retry
-//         sock_fd = zsocket(zoneid, baton->_path);
-//     } while (attempts++ < 3 && sock_fd < 0);
-//     if (sock_fd < 0) {
-//         baton->setErrno("zsocket", errno);
-//         return;
-//     }
-// 
-//     if (listen(sock_fd, baton->_backlog) != 0) {
-//         baton->setErrno("listen", errno);
-//         return;
-//     }
-// 
-//     baton->_fd = sock_fd;
-// 
-//     return;
-// }
+    if ((ret = zone_enter(zoneid)) != 0) {
+      debug("CHILD: zone_enter(%d) => %s (%d)\n", zoneid, strerror(errno), ret);
+      if (errno == EINVAL) {
+        _exit(0);
+      }
+      _exit(1);
+    }
+
+    debug("CHILD: zone_enter(%d) => %d\n", zoneid, 0);
+
+    if ((file_fd = open(path, O_RDONLY)) < 0) {
+      debug("CHILD: open => %d\n", errno);
+      _exit(2);
+    }
+
+    if (write_fd(sockfd[1], (void *)"", 1, file_fd) < 0) {
+      debug("CHILD: write_fd => %d\n", errno);
+      _exit(4);
+    }
+
+    debug("CHILD: write_fd => %d\n", errno);
+    _exit(0);
+  }
+
+  if (contract_latest(&ct) == -1) {
+    ct = -1;
+  }
+  (void) ct_tmpl_clear(tmpl_fd);
+  (void) close(tmpl_fd);
+  (void) contract_abandon_id(ct);
+  (void) close(sockfd[1]);
+  debug("PARENT: waitforpid(%d)\n", pid);
+  while ((waitpid(pid, &stat, 0) != pid) && errno != ECHILD) ;
+
+  if (WIFEXITED(stat) == 0) {
+    debug("PARENT: Child didn't exit\n");
+    _errno = ECHILD;
+    file_fd = -1;
+  } else {
+    stat = WEXITSTATUS(stat);
+    debug("PARENT: Child exit status %d\n", stat);
+    if (stat == 0) {
+      read_fd(sockfd[0], &c, 1, &file_fd);
+    } else {
+      _errno = stat;
+      file_fd = -1;
+    }
+  }
+
+  close(sockfd[0]);
+  pthread_mutex_unlock(&lock);
+  if (file_fd < 0) {
+    errno = _errno;
+  } else {
+    if ((flags = fcntl(file_fd, F_GETFD)) != -1) {
+      flags |= FD_CLOEXEC;
+      (void) fcntl(file_fd, F_SETFD, flags);
+    }
+
+    errno = 0;
+  }
+  debug("zfile returning fd=%d, errno=%d\n", file_fd, errno);
+  return (file_fd);
+}
 
 
 static void EIO_ZFile(uv_work_t *req) {
@@ -216,9 +442,18 @@ static void EIO_ZFile(uv_work_t *req) {
         baton->setErrno("getzoneidbyname", errno);
         return;
     }
-    int sock_fd = 666;
+    int file_fd = -1;
+    int attempts = 1;
+    do {
+        // This call suffers from EINTR, so just retry
+        file_fd = zfile(zoneid, baton->_path);
+    } while (attempts++ < 3 && file_fd < 0);
+    if (file_fd < 0) {
+        baton->setErrno("zfile", errno);
+        return;
+    }
 
-    baton->_fd = sock_fd;
+    baton->_fd = file_fd;
 
     return;
 }
