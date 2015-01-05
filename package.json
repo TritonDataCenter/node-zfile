@@ -9,7 +9,6 @@
   "author": "Orlando Vazquez <ovazquez@gmail.com> (http://www.joyent.com)",
   "main": "lib/zfile.js",
   "scripts": {
-    "preinstall": "node-waf configure build",
     "test": "TEST_ZONE=`zoneadm list | grep -v global | head -1` ./node_modules/.bin/nodeunit tests/test-zfile.js"
   },
   "devDependencies": {

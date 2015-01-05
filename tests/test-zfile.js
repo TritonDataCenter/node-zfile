@@ -77,25 +77,6 @@ function testInvalidCallback(test) {
     test.done();
 }
 
-function testSuccessStream(test) {
-    var self = this;
-    test.expect(3);
-    test.equal(process.getuid(), 0, 'must be root to run this test');
-
-    zfile.createZoneFileStream(
-        {zone: self.zone, path: self.path},
-        onZFileStream);
-
-    function onZFileStream(err, stream) {
-        test.ok(!err,
-            err + ' (must have zone named "foo" or set TEST_ZONE envvar)');
-
-        test.ok(stream, 'stream was returned');
-        stream.pipe(process.stdout);
-        stream.resume();
-        test.done();
-    }
-}
 
 function testSuccessFileDescriptor(test) {
     var self = this;
@@ -103,7 +84,7 @@ function testSuccessFileDescriptor(test) {
     test.equal(process.getuid(), 0, 'must be root to run this test');
 
     zfile.getZoneFileDescriptor(
-        {zone: self.zone, path: self.path},
+        { zone: self.zone, path: self.path },
         onZFileDescriptor);
 
     function onZFileDescriptor(err, fd) {
@@ -111,6 +92,29 @@ function testSuccessFileDescriptor(test) {
             err + ' (must have zone named "foo" or set TEST_ZONE envvar)');
         test.ok(fd);
         test.done();
+    }
+}
+
+function testSuccessStream(test) {
+    var self = this;
+    test.expect(4);
+    test.equal(process.getuid(), 0, 'must be root to run this test');
+
+    zfile.createZoneFileStream(
+        { zone: self.zone, path: self.path },
+        onZFileStream);
+
+    function onZFileStream(err, stream) {
+        test.ok(!err,
+            err + ' (must have zone named "foo" or set TEST_ZONE envvar)');
+
+        test.ok(stream, 'stream was returned');
+        stream.on('data', function (data) {
+            test.ok(data.toString().match(/^root:x:/),
+                    'should find our string');
+            test.done();
+        });
+
     }
 }
 

@@ -126,7 +126,7 @@ static void chomp(char *s) {
 
 static void debug(const char *fmt, ...) {
     char *buf = NULL;
-    struct tm tm = {};
+    struct tm tm;
     time_t now;
     va_list alist;
 
@@ -434,7 +434,7 @@ static int zfile(zoneid_t zoneid, const char *path) {
 }
 
 
-static void EIO_ZFile(uv_work_t *req) {
+static void uv_ZFile(uv_work_t *req) {
     eio_baton_t *baton = static_cast<eio_baton_t *>(req->data);
 
     zoneid_t zoneid = getzoneidbyname(baton->_zone);
@@ -459,7 +459,7 @@ static void EIO_ZFile(uv_work_t *req) {
 }
 
 
-static void EIO_After(uv_work_t *req) {
+static void uv_After(uv_work_t *req, int status) {
     v8::HandleScope scope;
     eio_baton_t *baton = static_cast<eio_baton_t *>(req->data);
     delete (req);
@@ -511,15 +511,24 @@ static v8::Handle<v8::Value> ZFile(const v8::Arguments& args) {
 
     uv_work_t *req = new uv_work_t;
     req->data = baton;
-    uv_queue_work(uv_default_loop(), req, EIO_ZFile, EIO_After);
+    uv_queue_work(uv_default_loop(), req, uv_ZFile, uv_After);
 
     return v8::Undefined();
 }
 
 
-extern "C" {
-    void init(v8::Handle<v8::Object> target) {
-        v8::HandleScope scope;
-        NODE_SET_METHOD(target, "zfile", ZFile);
-    }
+// extern "C" {
+//     void init(v8::Handle<v8::Object> target) {
+//         v8::HandleScope scope;
+//         NODE_SET_METHOD(target, "zfile", ZFile);
+//     }
+// }
+
+void Init(v8::Handle<v8::Object> exports, v8::Handle<v8::Object> module) {
+//       module->Set(v8::String::NewSymbol("exports"),
+//                     v8::FunctionTemplate::New(ZFile)->GetFunction());
+      exports->Set(v8::String::NewSymbol("zfile"),
+                    v8::FunctionTemplate::New(ZFile)->GetFunction());
 }
+
+NODE_MODULE(zfile, Init)
