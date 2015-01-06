@@ -25,7 +25,7 @@ function tearDown(callback) {
 function testNoOptions(test) {
     test.expect(1);
     test.throws(function () {
-        zfile.createZoneSocket();
+        zfile.createZoneFileDescriptor();
     });
     test.done();
 }
@@ -34,7 +34,7 @@ function testMissingZone(test) {
     var self = this;
     test.expect(1);
     test.throws(function () {
-        zfile.createZoneSocket({
+        zfile.createZoneFileDescriptor({
             path: self.path
         });
     });
@@ -45,7 +45,7 @@ function testMissingPath(test) {
     var self = this;
     test.expect(1);
     test.throws(function () {
-        zfile.createZoneSocket({
+        zfile.createZoneFileDescriptor({
             zone: self.zone
         });
     });
@@ -56,7 +56,7 @@ function testMissingCallback(test) {
     var self = this;
     test.expect(1);
     test.throws(function () {
-        zfile.createZoneSocket({
+        zfile.createZoneFileDescriptor({
             zone: 'abc123',
             path: self.path
         });
@@ -69,7 +69,7 @@ function testInvalidCallback(test) {
     var self = this;
     test.expect(1);
     test.throws(function () {
-        zfile.createZoneSocket({
+        zfile.createZoneFileDescriptor({
             zone: '----abc123',
             path: self.path
         }, 5);
@@ -90,10 +90,11 @@ function testSuccessFileDescriptor(test) {
     function onZFileDescriptor(err, fd) {
         test.ok(!err,
             err + ' (must have zone named "foo" or set TEST_ZONE envvar)');
-        test.ok(fd);
+        test.ok(fd > 0);
         test.done();
     }
 }
+
 
 function testSuccessStream(test) {
     var self = this;
