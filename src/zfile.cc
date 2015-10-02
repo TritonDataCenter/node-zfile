@@ -32,6 +32,10 @@
 #include <node.h>
 #include <v8.h>
 
+#define MODE_R 0
+#define MODE_W 1
+#define MODE_A 2
+
 static const int BUF_SZ = 27;
 static const char *PREFIX = "%s GMT T(%d) %s: ";
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -77,6 +81,7 @@ class eio_baton_t {
         eio_baton_t(): _path(NULL),
         _syscall(NULL),
         _zone(NULL),
+        _mode(0),
         _errno(0),
         _fd(-1) {}
 
@@ -106,6 +111,7 @@ class eio_baton_t {
         char *_path;
         char *_syscall;
         char *_zone;
+        int _mode;
         int _errno;
         int _fd;
 
@@ -315,7 +321,7 @@ static ssize_t write_fd(int fd, void *ptr, size_t nbytes, int sendfd) {
 }
 
 
-static int zfile(zoneid_t zoneid, const char *path) {
+static int zfile(zoneid_t zoneid, const char *path, int mode) {
   char c = 0;
   ctid_t ct = -1;
   int _errno = 0;
@@ -328,6 +334,7 @@ static int zfile(zoneid_t zoneid, const char *path) {
   int stat = 0;
   int tmpl_fd = 0;
   int flags;
+  int openmode = 0;
 
   if (zoneid < 0) {
     return (-1);
@@ -378,7 +385,22 @@ static int zfile(zoneid_t zoneid, const char *path) {
 
     debug("CHILD: zone_enter(%d) => %d\n", zoneid, 0);
 
-    if ((file_fd = open(path, O_RDONLY)) < 0) {
+    switch (mode) {
+        case MODE_R:
+            openmode = O_RDONLY;
+            break;
+        case MODE_W:
+            openmode = O_WRONLY | O_CREAT | O_TRUNC;
+            break;
+        case MODE_A:
+            openmode = O_APPEND | O_CREAT;
+            break;
+        default:
+            debug("CHILD: invalid open mode (%d)\n", mode);
+            _exit(6);
+    }
+
+    if ((file_fd = open(path, openmode)) < 0) {
       debug("CHILD: open => %d\n", errno);
       _exit(2);
     }
@@ -446,7 +468,7 @@ static void uv_ZFile(uv_work_t *req) {
     int attempts = 1;
     do {
         // This call suffers from EINTR, so just retry
-        file_fd = zfile(zoneid, baton->_path);
+        file_fd = zfile(zoneid, baton->_path, baton->_mode);
     } while (attempts++ < 3 && file_fd < 0);
     if (file_fd < 0) {
         baton->setErrno("zfile", errno);
@@ -492,7 +514,8 @@ static v8::Handle<v8::Value> ZFile(const v8::Arguments& args) {
 
     REQUIRE_STRING_ARG(args, 0, zone);
     REQUIRE_STRING_ARG(args, 1, path);
-    REQUIRE_FUNCTION_ARG(args, 2, callback);
+    REQUIRE_INT_ARG(args, 2, mode);
+    REQUIRE_FUNCTION_ARG(args, 3, callback);
 
     eio_baton_t *baton = new eio_baton_t();
     baton->_zone = strdup(*zone);
@@ -502,6 +525,7 @@ static v8::Handle<v8::Value> ZFile(const v8::Arguments& args) {
     }
 
     baton->_path = strdup(*path);
+    baton->_mode = mode;
     if (baton->_path == NULL) {
         delete baton;
         RETURN_EXCEPTION("OutOfMemory");

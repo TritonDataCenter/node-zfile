@@ -32,12 +32,15 @@ To use the library to get a file descriptor to file:
     var myPath = '/etc/passwd';
 
     zfile.getZoneFileDescriptor(
-        {zone: self.zone, path: myPath},
+        {zone: self.zone, path: myPath, mode: 'w'},
         onZFileDescriptor);
 
     function onZFileDescriptor(err, fd) {
         // ...
     }
+
+The optional paramater 'mode' can be 'r', 'w', or 'a' and defaults 'r' if not
+explicitly specified.
 
 ## Installation
 

@@ -45,6 +45,12 @@ RELEASE_TARBALL:=$(NAME)-pkg-$(STAMP).tar.bz2
 RELSTAGEDIR:=/tmp/$(STAMP)
 
 
+# Just a quick hack to piggy back on the back of the node installation on an
+# installed cn-agent (since cn-agent is what will ultimately be running this).
+.PHONY: test
+test:
+	./tools/rsync-to coal
+	ssh coal "cd /var/tmp/zfile; ZFILE_DEBUG=1 TEST_ZONE=\$$(/opt/smartdc/bin/sdc-vmname assets) /opt/smartdc/agents/lib/node_modules/cn-agent/node/bin/node ./node_modules/.bin/nodeunit tests/"
 #
 # Targets
 #

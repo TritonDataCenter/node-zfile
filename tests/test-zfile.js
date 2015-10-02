@@ -9,11 +9,16 @@
  */
 
 var fs = require('fs');
+var vasync = require('vasync');
 var testCase = require('nodeunit').testCase;
 
 var zfile = require('../lib/zfile');
 function setUp(callback) {
     this.zone = process.env.TEST_ZONE;
+    if (!this.zone) {
+        throw new Error('TEST_ZONE not given!');
+    }
+
     this.path = '/etc/passwd';
     callback();
 }
@@ -78,13 +83,13 @@ function testInvalidCallback(test) {
 }
 
 
-function testSuccessFileDescriptor(test) {
+function testSuccessReadFileDescriptor(test) {
     var self = this;
     test.expect(3);
     test.equal(process.getuid(), 0, 'must be root to run this test');
 
     zfile.getZoneFileDescriptor(
-        { zone: self.zone, path: self.path },
+        { zone: self.zone, path: self.path, mode: 'r' },
         onZFileDescriptor);
 
     function onZFileDescriptor(err, fd) {
@@ -96,7 +101,25 @@ function testSuccessFileDescriptor(test) {
 }
 
 
-function testSuccessStream(test) {
+function testSuccessWriteFileDescriptor(test) {
+    var self = this;
+    test.expect(3);
+    test.equal(process.getuid(), 0, 'must be root to run this test');
+
+    zfile.getZoneFileDescriptor(
+        { zone: self.zone, path: self.path, mode: 'r' },
+        onZFileDescriptor);
+
+    function onZFileDescriptor(err, fd) {
+        test.ok(!err,
+            err + ' (must have zone named "foo" or set TEST_ZONE envvar)');
+        test.ok(fd > 0);
+        test.done();
+    }
+}
+
+
+function testSuccessReadStream(test) {
     var self = this;
     test.expect(4);
     test.equal(process.getuid(), 0, 'must be root to run this test');
@@ -119,6 +142,74 @@ function testSuccessStream(test) {
     }
 }
 
+function testInvalidModes(test) {
+    var self = this;
+    test.expect(3);
+    test.equal(process.getuid(), 0, 'must be root to run this test');
+
+    var path = '/tmp/test';
+
+    test.throws(function () {
+        zfile.createZoneFileStream(
+            { zone: self.zone, path: path, mode: 'x' },
+            onZFileStream);
+
+        function onZFileStream() {
+        }
+    });
+
+    test.throws(function () {
+        zfile.createZoneFileStream(
+            { zone: self.zone, path: path, mode: 'rw' },
+            onZFileStream);
+
+        function onZFileStream() {
+        }
+    });
+
+    test.done();
+}
+
+
+function testSuccessWriteStream(test) {
+    var self = this;
+
+    test.expect(6);
+    test.equal(process.getuid(), 0, 'must be root to run this test');
+    var dataToWrite = 'Bite off more than you can chew, then chew it'
+        + (new Date()).toISOString() + Math.random();
+
+    var path = '/tmp/test';
+
+    var context = {};
+
+    vasync.pipeline({ arg: context, funcs: [
+        function (ctx, next) {
+            zfile.createZoneFileStream(
+                { zone: self.zone, path: path, mode: 'w' },
+                function (err, stream) {
+                    test.ifError(err);
+                    test.ok(stream);
+                    ctx.stream = stream;
+                    next();
+                });
+        },
+        function (ctx, next) {
+            ctx.stream.end(dataToWrite, function (err) {
+                test.ifError(err);
+                var foo = fs.readFileSync(
+                        '/zones/'+self.zone+'/root' + path);
+
+                test.equal(foo.toString(), dataToWrite.toString());
+                next();
+            });
+        }
+    ]}, function (err) {
+        test.ifError(err);
+        test.done();
+    });
+}
+
 module.exports = {
     setUp: setUp,
     tearDown: tearDown,
@@ -127,6 +218,11 @@ module.exports = {
     'test no path specified': testMissingPath,
     'test no callback specified': testMissingCallback,
     'test invalid callback specified': testInvalidCallback,
-    'test success file descriptor': testSuccessFileDescriptor,
-    'test success stream': testSuccessStream
+    'test successly opening a read file descriptor':
+        testSuccessReadFileDescriptor,
+    'test successly opening a write file descriptor':
+        testSuccessWriteFileDescriptor,
+    'test invalid modes': testInvalidModes,
+    'test successly opening a read stream': testSuccessReadStream,
+    'test success opening a write stream': testSuccessWriteStream
 };
